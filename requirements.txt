@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pymongo[srv]
+python-dotenv
+pydantic
+google-genai
+streamlit
+requests
+typer[all]
+rich
