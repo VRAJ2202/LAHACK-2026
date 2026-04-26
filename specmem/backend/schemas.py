@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
-# ── Bug Memory ────────────────────────────────────────────────
+# ── Bug Memory (manual / legacy) ──────────────────────────────
 
 class BugMemoryCreate(BaseModel):
     project_id: str
@@ -34,6 +34,25 @@ class BugMemoryResponse(BaseModel):
     created_at: datetime
 
 
+# ── Debug Episode (automatic capture) ─────────────────────────
+
+class DebugEpisodeResponse(BaseModel):
+    id: str
+    project_id: str
+    command: str
+    error_message: str
+    stack_trace: str
+    error_type: str
+    file_paths: list[str] = Field(default_factory=list)
+    module: str = ""
+    failed_fixes: list[dict] = Field(default_factory=list)
+    successful_fix: dict | None = None
+    status: str = "open"
+    ai_suggestion: str = ""
+    similar_episodes: list[dict] = Field(default_factory=list)
+    created_at: datetime
+
+
 # ── Debug Query / Response ────────────────────────────────────
 
 class DebugQuery(BaseModel):
@@ -47,6 +66,8 @@ class DebugResponse(BaseModel):
     answer: str
     similar_bugs: list[dict] = Field(default_factory=list)
     failed_fix_warning: str | None = None
+    failed_fix_confidence: float | None = None
+    retrieval_mode: str | None = None
     token_savings: dict | None = None
 
 
@@ -65,3 +86,17 @@ class TokenLogCreate(BaseModel):
     query: str
     before_tokens: int
     after_tokens: int
+
+
+# ── Auto Extract ──────────────────────────────────────────────
+
+class ExtractRequest(BaseModel):
+    project_id: str
+    raw_text: str
+
+
+# ── Fix Feedback ──────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    fix_worked: bool
+    notes: str | None = None

@@ -1,0 +1,5 @@
+[
+  {"id": "ORD-001", "amount": 49.99,  "status": "cancelled"},
+  {"id": "ORD-002", "amount": 120.00, "status": "cancelled"},
+  {"id": "ORD-003", "amount": 34.50,  "status": "cancelled"}
+]

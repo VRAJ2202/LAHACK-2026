@@ -1,10 +1,10 @@
 fastapi
-uvicorn[standard]
-pymongo[srv]
+uvicorn
+pymongo
 python-dotenv
 pydantic
-google-genai
+google-generativeai
 streamlit
 requests
-typer[all]
+typer
 rich

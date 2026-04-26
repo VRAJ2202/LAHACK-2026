@@ -24,21 +24,26 @@ def get_db() -> Database:
 
 
 def ensure_indexes() -> None:
-    """Create indexes on bug_memories for fast queries."""
+    """Create indexes on all collections."""
     db = get_db()
-    col = db["bug_memories"]
 
+    # bug_memories indexes (legacy manual memories)
+    col = db["bug_memories"]
     col.create_index([("project_id", ASCENDING)])
     col.create_index([("module", ASCENDING)])
     col.create_index([("file_path", ASCENDING)])
     col.create_index([("tags", ASCENDING)])
     col.create_index([("created_at", DESCENDING)])
+    col.create_index([("project_id", ASCENDING), ("created_at", DESCENDING)])
 
-    # Compound index for common query pattern
-    col.create_index([
-        ("project_id", ASCENDING),
-        ("created_at", DESCENDING),
-    ])
+    # debug_episodes indexes (automatic capture)
+    ep = db["debug_episodes"]
+    ep.create_index([("project_id", ASCENDING)])
+    ep.create_index([("status", ASCENDING)])
+    ep.create_index([("error_type", ASCENDING)])
+    ep.create_index([("created_at", DESCENDING)])
+    ep.create_index([("project_id", ASCENDING), ("status", ASCENDING)])
+    ep.create_index([("project_id", ASCENDING), ("created_at", DESCENDING)])
 
 
 def ping() -> bool:
