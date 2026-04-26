@@ -2,13 +2,14 @@
 SpecMem CLI — automatic error capture + memory-powered debugging.
 
 Usage:
-    specmem run "python app.py"       # Run command, auto-capture errors
-    specmem fix "python app.py"       # Re-run after editing, track fix via git diff
-    specmem debug "query" -p PROJECT  # Manual debug query
-    specmem check "fix" -p PROJECT    # Check if fix failed before
-    specmem remember -p PROJECT       # Manually save a bug memory
-    specmem memories -p PROJECT       # List stored memories
-    specmem episodes -p PROJECT       # List auto-captured episodes
+    specmem agent "python app.py" -p PROJECT  # 🤖 Autonomous: auto-fix until success
+    specmem run "python app.py"               # Run command, auto-capture errors
+    specmem fix "python app.py"               # Re-run after editing, track fix via git diff
+    specmem debug "query" -p PROJECT          # Manual debug query
+    specmem check "fix" -p PROJECT            # Check if fix failed before
+    specmem remember -p PROJECT               # Manually save a bug memory
+    specmem memories -p PROJECT               # List stored memories
+    specmem episodes -p PROJECT               # List auto-captured episodes
 """
 
 import os
@@ -47,7 +48,6 @@ def _get_project_id(project_id: str | None) -> str:
         return project_id
     if DEFAULT_PROJECT:
         return DEFAULT_PROJECT
-    # Try to infer from git
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -63,20 +63,10 @@ def _get_project_id(project_id: str | None) -> str:
 def _get_git_diff() -> str:
     """Get the current git diff (staged + unstaged)."""
     try:
-        # Unstaged changes
-        result = subprocess.run(
-            ["git", "diff"],
-            capture_output=True, text=True, timeout=10,
-        )
+        result = subprocess.run(["git", "diff"], capture_output=True, text=True, timeout=10)
         diff = result.stdout.strip()
-
-        # Also get staged changes
-        result2 = subprocess.run(
-            ["git", "diff", "--cached"],
-            capture_output=True, text=True, timeout=10,
-        )
+        result2 = subprocess.run(["git", "diff", "--cached"], capture_output=True, text=True, timeout=10)
         staged = result2.stdout.strip()
-
         combined = diff
         if staged:
             combined = combined + "\n" + staged if combined else staged
@@ -86,7 +76,7 @@ def _get_git_diff() -> str:
 
 
 def _parse_error_locally(stderr: str, command: str) -> dict:
-    """Parse error using the backend error_parser logic (imported or inline)."""
+    """Parse error from stderr output."""
     import re
     lines = stderr.strip().splitlines()
     error_type = ""
@@ -141,41 +131,55 @@ def _parse_error_locally(stderr: str, command: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+# specmem agent — FULLY AUTONOMOUS DEBUGGING
+# ══════════════════════════════════════════════════════════════
+
+@app.command()
+def agent(
+    command: str = typer.Argument(..., help='Command to run and auto-fix (e.g. "python app.py")'),
+    project_id: str = typer.Option(None, "--project-id", "-p", help="Project ID"),
+    max_iterations: int = typer.Option(5, "--max-iter", "-n", help="Max fix attempts"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Suggest fixes but don't apply them"),
+):
+    """🤖 Autonomous debugging agent — runs, detects, fixes, retries automatically."""
+    pid = _get_project_id(project_id)
+    from specmem.backend.agent_loop import run_agent_loop
+    success = run_agent_loop(
+        command=command,
+        project_id=pid,
+        max_iterations=max_iterations,
+        dry_run=dry_run,
+    )
+    raise typer.Exit(0 if success else 1)
+
+
+# ══════════════════════════════════════════════════════════════
 # specmem run — AUTOMATIC ERROR CAPTURE
 # ══════════════════════════════════════════════════════════════
 
 @app.command()
 def run(
     command: str = typer.Argument(..., help='Command to run, e.g. "python app.py"'),
-    project_id: str = typer.Option(None, "--project-id", "-p", help="Project ID (auto-detected from git)"),
+    project_id: str = typer.Option(None, "--project-id", "-p", help="Project ID"),
 ):
     """Run a command and automatically capture errors into SpecMem memory."""
     pid = _get_project_id(project_id)
     console.print(f"[bold cyan]SpecMem[/bold cyan] running: [dim]{command}[/dim]")
     console.print(f"[dim]Project: {pid}[/dim]\n")
 
-    # ── Execute the command ──
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=120,
-        )
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         console.print("[red]Command timed out after 120s[/red]")
         raise typer.Exit(1)
 
-    # ── Print stdout ──
     if result.stdout.strip():
         console.print(result.stdout)
 
-    # ── Success path ──
     if result.returncode == 0:
-        console.print(Panel(
-            "[green]Command succeeded — no errors detected.[/green]",
-            title="✅ Success",
-        ))
+        console.print(Panel("[green]Command succeeded — no errors detected.[/green]", title="✅ Success"))
         return
 
-    # ── Error path ──
     stderr = result.stderr.strip()
     if stderr:
         console.print(Syntax(stderr, "pytb", theme="monokai", line_numbers=False))
@@ -183,24 +187,13 @@ def run(
     console.print(f"\n[red]Exit code: {result.returncode}[/red]")
     console.print("[bold yellow]Error detected — capturing into SpecMem...[/bold yellow]\n")
 
-    # ── Parse the error ──
     parsed = _parse_error_locally(stderr, command)
-
     console.print(f"[bold]Error type:[/bold] {parsed['error_type']}")
     console.print(f"[bold]Message:[/bold]   {parsed['error_message']}")
     console.print(f"[bold]Files:[/bold]     {', '.join(parsed['file_paths']) or 'unknown'}")
     console.print(f"[bold]Module:[/bold]    {parsed['module'] or 'unknown'}")
 
-    # ── Store episode via API ──
     try:
-        # Use extract endpoint to auto-create memory from the error
-        raw_text = (
-            f"Command: {command}\n"
-            f"Error: {parsed['error_type']}: {parsed['error_message']}\n"
-            f"Files: {', '.join(parsed['file_paths'])}\n"
-            f"Stack trace:\n{parsed['stack_trace'][:1000]}"
-        )
-
         ep_data = {
             "project_id": pid,
             "command": command,
@@ -210,24 +203,16 @@ def run(
             "file_paths": parsed["file_paths"],
             "module": parsed["module"],
         }
-
-        # Store directly via internal endpoint
         ep_result = _post("/episodes/capture", ep_data)
         episode_id = ep_result.get("id", "")
 
         console.print(Panel(
-            f"[green]Episode captured![/green]\n"
-            f"ID: {episode_id[:12]}...\n"
-            f"Status: open",
+            f"[green]Episode captured![/green]\nID: {episode_id[:12]}...\nStatus: open",
             title="📝 Stored in Memory",
         ))
 
-        # ── Show AI suggestion ──
         if ep_result.get("ai_suggestion"):
-            console.print(Panel(
-                Markdown(ep_result["ai_suggestion"]),
-                title="🧠 SpecMem Suggestion",
-            ))
+            console.print(Panel(Markdown(ep_result["ai_suggestion"]), title="🧠 SpecMem Suggestion"))
 
         if ep_result.get("similar_episodes"):
             console.print(f"\n[dim]Found {len(ep_result['similar_episodes'])} similar past issues[/dim]")
@@ -238,11 +223,13 @@ def run(
 
         console.print(
             f"\n[cyan]Next step:[/cyan] Fix the code, then run:\n"
-            f"  [bold]specmem fix \"{command}\"[/bold]"
+            f"  [bold]specmem fix \"{command}\"[/bold]\n"
+            f"  or let the agent fix it:\n"
+            f"  [bold]specmem agent \"{command}\" -p {pid}[/bold]"
         )
 
     except requests.exceptions.ConnectionError:
-        console.print("[red]Backend not running. Start it with: uvicorn specmem.backend.main:app --reload[/red]")
+        console.print("[red]Backend not running. Start with: uvicorn specmem.backend.main:app --reload[/red]")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Failed to store episode: {e}[/red]")
@@ -261,7 +248,6 @@ def fix(
     """Re-run command after editing code. Tracks fix via git diff."""
     pid = _get_project_id(project_id)
 
-    # ── Get git diff (what the developer changed) ──
     diff = _get_git_diff()
     if not diff:
         console.print("[yellow]No git changes detected. Edit your code first, then run specmem fix.[/yellow]")
@@ -275,11 +261,8 @@ def fix(
 
     console.print(f"[bold cyan]SpecMem[/bold cyan] re-running: [dim]{command}[/dim]\n")
 
-    # ── Re-run the command ──
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=120,
-        )
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         console.print("[red]Command timed out[/red]")
         raise typer.Exit(1)
@@ -287,57 +270,59 @@ def fix(
     if result.stdout.strip():
         console.print(result.stdout)
 
-    # ── Success: fix worked! ──
     if result.returncode == 0:
-        console.print(Panel(
-            "[bold green]Fix worked! Error is resolved.[/bold green]",
-            title="✅ Fix Successful",
-        ))
-
-        # Store successful fix
+        console.print(Panel("[bold green]Fix worked! Error is resolved.[/bold green]", title="✅ Fix Successful"))
         try:
-            fix_result = _post("/episodes/fix-result", {
-                "project_id": pid,
-                "command": command,
+            fix_data = {
+                "project_id": pid, "command": command,
                 "diff": diff or "(no git diff captured)",
-                "success": True,
-                "stderr": "",
-            })
-            console.print(f"[green]Successful fix stored in memory.[/green]")
-            console.print(f"[dim]Future errors like this will get better suggestions.[/dim]")
+                "success": True, "stderr": "",
+            }
+            fix_resp = _post("/episodes/fix-result", fix_data)
+            # If no open episode existed, capture a synthetic one and immediately resolve it
+            if fix_resp.get("message") == "No open episode found":
+                ep = _post("/episodes/capture", {
+                    "project_id": pid,
+                    "command": command,
+                    "error_message": "Fixed via specmem fix",
+                    "stack_trace": "",
+                    "error_type": "ResolvedFix",
+                    "file_paths": [],
+                    "module": "",
+                })
+                if ep.get("id"):
+                    import requests as _req
+                    _req.patch(
+                        f"{BACKEND_URL}/memory/{ep['id']}/feedback",
+                        json={"fix_worked": True},
+                        timeout=5,
+                    )
+                    _post("/episodes/fix-result", fix_data)
+            console.print("[green]Successful fix stored in memory.[/green]")
+            console.print("[dim]Future errors like this will get better suggestions.[/dim]")
         except Exception as e:
             console.print(f"[dim]Note: couldn't store fix result: {e}[/dim]")
         return
 
-    # ── Still failing: fix didn't work ──
     stderr = result.stderr.strip()
     if stderr:
         console.print(Syntax(stderr, "pytb", theme="monokai", line_numbers=False))
 
     console.print(f"\n[red]Still failing (exit code: {result.returncode})[/red]")
 
-    # Store failed fix
     try:
         fix_result = _post("/episodes/fix-result", {
-            "project_id": pid,
-            "command": command,
+            "project_id": pid, "command": command,
             "diff": diff or "(no git diff captured)",
-            "success": False,
-            "stderr": stderr[:2000],
+            "success": False, "stderr": stderr[:2000],
         })
-
         console.print(Panel(
             "[yellow]Failed fix recorded in memory.[/yellow]\n"
             "SpecMem will warn about this approach in the future.",
             title="❌ Fix Failed",
         ))
-
         if fix_result.get("ai_suggestion"):
-            console.print(Panel(
-                Markdown(fix_result["ai_suggestion"]),
-                title="🧠 Updated Suggestion",
-            ))
-
+            console.print(Panel(Markdown(fix_result["ai_suggestion"]), title="🧠 Updated Suggestion"))
         console.print(
             f"\n[cyan]Try again:[/cyan] Edit code, then:\n"
             f"  [bold]specmem fix \"{command}\"[/bold]"
@@ -347,7 +332,7 @@ def fix(
 
 
 # ══════════════════════════════════════════════════════════════
-# Existing commands (manual)
+# Manual commands
 # ══════════════════════════════════════════════════════════════
 
 @app.command()
@@ -379,8 +364,8 @@ def debug(
             for bug in result["similar_bugs"][:5]:
                 title = bug.get("bug_title", bug.get("error_type", ""))
                 mod = bug.get("module", "")
-                fix = bug.get("final_fix", bug.get("status", ""))
-                table.add_row(title, mod, str(fix)[:60])
+                fix_val = bug.get("final_fix", bug.get("status", ""))
+                table.add_row(title, mod, str(fix_val)[:60])
             console.print(table)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

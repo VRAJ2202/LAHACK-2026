@@ -1,0 +1,10 @@
+{
+  "app_name": "SpecMem Demo",
+  "database": {
+    "host": "localhost",
+    "port": 5432
+  },
+  "email": {
+    "sender": "admin@specmem.io"
+  }
+}
